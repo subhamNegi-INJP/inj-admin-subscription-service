@@ -1,0 +1,347 @@
+// Subscription Service Prisma Schema
+// Microservice for subscription lifecycle, renewals, upgrades/downgrades
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// =============================================================================
+// ENUMS
+// =============================================================================
+
+// Subscription status
+enum SubscriptionStatus {
+  PENDING       // Awaiting payment
+  ACTIVE        // Active and usable
+  EXPIRED       // Past expiration date
+  CANCELLED     // Cancelled by user
+  SUSPENDED     // Temporarily suspended
+  GRACE_PERIOD  // Expired but in grace period
+}
+
+// Payment status
+enum PaymentStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+  REFUNDED
+  CANCELLED
+}
+
+// Subscription change types
+enum SubscriptionChangeType {
+  ACTIVATION
+  UPGRADE
+  DOWNGRADE
+  SEATS_ADDED
+  SEATS_REMOVED
+  DURATION_EXTENDED
+  CANCELLED
+  RENEWED
+  ADDON_ADDED
+  ADDON_REMOVED
+}
+
+// Addon status for subscription addons
+enum AddonStatus {
+  PENDING_PAYMENT   // Waiting for payment
+  ACTIVE            // Active and usable
+  CANCELLED         // Cancelled by user
+  EXPIRED           // Past expiration date
+  SUSPENDED         // Temporarily suspended
+}
+
+// =============================================================================
+// CLIENT SUBSCRIPTION MODEL
+// Main subscription entity with denormalized data from other services
+// =============================================================================
+model ClientSubscription {
+  id              String             @id @default(cuid())
+  
+  // === DENORMALIZED CLIENT DATA ===
+  clientId        String
+  clientName      String             // From Client Service
+  clientEmail     String?            // From Client Service
+  
+  // === DENORMALIZED PRODUCT DATA ===
+  productId       String
+  productName     String             // From Product Service
+  productCode     String             // From Product Service
+  
+  // === DENORMALIZED LICENSE TYPE DATA ===
+  licenseTypeId   String
+  licenseTypeName String             // From Product Service
+  
+  // === DENORMALIZED PRICING PLAN DATA ===
+  pricingPlanId   String
+  pricingPlanName String?            // From Product Service
+  billingCycle    String             @default("MONTHLY") // MONTHLY, ANNUAL, PERPETUAL
+  
+  // === ORDER REFERENCE ===
+  orderId         String?            // Order that created this subscription
+  orderItemId     String?            // Specific order item
+  
+  // === SUBSCRIPTION DETAILS ===
+  name            String?            // "Marketing Team License", "Dev Team License"
+  seats           Int                @default(1)
+  
+  // === FEATURES ===
+  availableFeatures String[]         @default([])  // All features from license type
+  selectedFeatures  String[]         @default([])  // Features selected by client
+  
+  // === DATES ===
+  subscriptionDate  DateTime         @default(now())
+  activationDate    DateTime?        // When payment completed
+  expirationDate    DateTime
+  gracePeriodDays   Int              @default(7)
+  
+  // === STATUS ===
+  status            SubscriptionStatus @default(PENDING)
+  
+  // === PRICING & BILLING ===
+  pricePerSeat      Decimal          @db.Decimal(10, 2)
+  subtotal          Decimal          @default(0) @db.Decimal(12, 2)
+  
+  // Discount
+  discountPercent   Decimal          @default(0) @db.Decimal(5, 2)
+  discountAmount    Decimal          @default(0) @db.Decimal(12, 2)
+  couponId          String?
+  couponCode        String?
+  couponDiscount    Decimal          @default(0) @db.Decimal(12, 2)
+  couponValidForRenewal Boolean      @default(false)
+  
+  // Tax
+  gstin             String?
+  taxPercent        Decimal          @default(18) @db.Decimal(5, 2)
+  taxAmount         Decimal          @default(0) @db.Decimal(12, 2)
+  
+  // Final amounts
+  totalAmount       Decimal          @db.Decimal(12, 2)
+  currency          String           @default("INR")
+  
+  // === PAYMENT TRACKING ===
+  paymentId         String?
+  paymentStatus     PaymentStatus    @default(PENDING)
+  paymentMethod     String?          // BANK_TRANSFER, UPI, CREDIT_CARD, etc.
+  paymentTransactionId String?       // Transaction reference number
+  paymentNotes      String?          // Payment notes
+  paymentCompletedAt DateTime?       // When payment was confirmed
+  
+  // === AUTO-RENEWAL ===
+  autoRenew         Boolean          @default(true)
+  renewalRemindedAt DateTime?
+  nextRenewalDate   DateTime?
+  
+  // === LICENSE POOL LINK ===
+  licensePoolId     String?          @unique
+  
+  // === CANCELLATION ===
+  cancelledAt       DateTime?
+  cancelReason      String?
+  cancelledById     String?
+  cancelledByName   String?
+  
+  // === RELATIONS ===
+  renewals          SubscriptionRenewal[]
+  changes           SubscriptionChange[]
+  addons            SubscriptionAddon[]
+  
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+
+  @@index([clientId])
+  @@index([productId])
+  @@index([licenseTypeId])
+  @@index([pricingPlanId])
+  @@index([status])
+  @@index([paymentStatus])
+  @@index([expirationDate])
+  @@index([licensePoolId])
+  @@map("client_subscriptions")
+}
+
+// =============================================================================
+// SUBSCRIPTION RENEWAL MODEL
+// Track subscription renewals
+// =============================================================================
+model SubscriptionRenewal {
+  id              String   @id @default(cuid())
+  subscriptionId  String
+  
+  // Renewal period
+  previousEndDate DateTime
+  newEndDate      DateTime
+  
+  // Pricing at renewal time
+  seats           Int
+  pricePerSeat    Decimal  @db.Decimal(10, 2)
+  subtotal        Decimal  @db.Decimal(12, 2)
+  discountAmount  Decimal  @default(0) @db.Decimal(12, 2)
+  taxAmount       Decimal  @default(0) @db.Decimal(12, 2)
+  totalAmount     Decimal  @db.Decimal(12, 2)
+  currency        String   @default("INR")
+  
+  // Payment reference
+  paymentId       String?
+  invoiceId       String?
+  paymentStatus   PaymentStatus @default(PENDING)
+  
+  // Who initiated
+  initiatedBy     String?  // "SYSTEM" for auto, or user ID
+  initiatedByName String?
+  isAutoRenewal   Boolean  @default(false)
+  
+  // Status
+  status          String   @default("PENDING") // PENDING, COMPLETED, FAILED
+  failureReason   String?
+  
+  renewedAt       DateTime @default(now())
+  
+  subscription    ClientSubscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+  
+  @@index([subscriptionId])
+  @@index([renewedAt])
+  @@index([status])
+  @@map("subscription_renewals")
+}
+
+// =============================================================================
+// SUBSCRIPTION CHANGE MODEL
+// Track upgrades, downgrades, seat changes
+// =============================================================================
+model SubscriptionChange {
+  id              String               @id @default(cuid())
+  subscriptionId  String
+  
+  changeType      SubscriptionChangeType
+  
+  // Previous state
+  previousLicenseTypeId   String?
+  previousLicenseTypeName String?
+  previousSeats           Int?
+  previousAmount          Decimal?     @db.Decimal(12, 2)
+  
+  // New state
+  newLicenseTypeId        String?
+  newLicenseTypeName      String?
+  newSeats                Int?
+  newAmount               Decimal?     @db.Decimal(12, 2)
+  
+  // Proration
+  proratedAmount          Decimal?     @db.Decimal(12, 2)
+  creditAmount            Decimal?     @db.Decimal(12, 2)  // Credit for downgrade
+  effectiveDate           DateTime
+  
+  // Payment
+  paymentId               String?
+  invoiceId               String?
+  paymentStatus           PaymentStatus @default(PENDING)
+  
+  // Who made change
+  changedById             String?
+  changedByName           String?
+  reason                  String?
+  notes                   String?
+  
+  subscription            ClientSubscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+  
+  createdAt               DateTime     @default(now())
+  
+  @@index([subscriptionId])
+  @@index([changeType])
+  @@index([createdAt])
+  @@map("subscription_changes")
+}
+
+// =============================================================================
+// SUBSCRIPTION EXPIRATION JOB MODEL
+// Track scheduled expiration jobs
+// =============================================================================
+model SubscriptionExpirationJob {
+  id              String   @id @default(cuid())
+  subscriptionId  String   @unique
+  
+  expirationDate  DateTime
+  reminderSentAt  DateTime?
+  processedAt     DateTime?
+  
+  status          String   @default("PENDING") // PENDING, REMINDER_SENT, PROCESSED, CANCELLED
+  
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  
+  @@index([expirationDate])
+  @@index([status])
+  @@map("subscription_expiration_jobs")
+}
+
+// =============================================================================
+// SUBSCRIPTION ADDON MODEL
+// Track addon features purchased for a subscription
+// =============================================================================
+model SubscriptionAddon {
+  id              String       @id @default(cuid())
+  subscriptionId  String
+  
+  // === DENORMALIZED ADDON DATA (from Product Service) ===
+  addonCode       String       // Unique addon code (e.g., 'ADVANCED_ANALYTICS')
+  addonName       String       // Display name
+  addonDescription String?     // Description
+  
+  // === PRICING (at purchase time) ===
+  pricingType     String       // ONE_TIME, PER_SEAT, FLAT_RATE
+  pricePerUnit    Decimal      @db.Decimal(10, 2)  // Price per seat or flat
+  quantity        Int          @default(1)         // Number of units (for per-seat)
+  subtotal        Decimal      @db.Decimal(12, 2)  // Before tax
+  taxPercent      Decimal      @default(18) @db.Decimal(5, 2)
+  taxAmount       Decimal      @default(0) @db.Decimal(12, 2)
+  totalAmount     Decimal      @db.Decimal(12, 2)  // Final amount
+  currency        String       @default("INR")
+  
+  // === BILLING INFO ===
+  billingCycle    String?      // MONTHLY, ANNUAL (null for one-time)
+  nextBillingDate DateTime?    // Next billing date for recurring
+  isRecurring     Boolean      @default(true)      // Auto-renew with subscription
+  
+  // === STATUS ===
+  status          AddonStatus  @default(PENDING_PAYMENT)
+  
+  // === DATES ===
+  purchasedAt     DateTime?    // When first purchased
+  activatedAt     DateTime?    // When payment confirmed
+  expirationDate  DateTime?    // When addon expires (for recurring)
+  cancelledAt     DateTime?    // When cancelled
+  
+  // === PAYMENT ===
+  paymentId       String?      // Payment record ID
+  paymentStatus   PaymentStatus @default(PENDING)
+  invoiceId       String?      // Invoice ID from billing service
+  
+  // === CANCELLATION ===
+  cancelReason    String?
+  cancelledById   String?
+  cancelledByName String?
+  
+  // === METADATA ===
+  notes           String?
+  
+  // === RELATIONS ===
+  subscription    ClientSubscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+  
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+  
+  @@unique([subscriptionId, addonCode]) // Only one of each addon per subscription
+  @@index([subscriptionId])
+  @@index([addonCode])
+  @@index([status])
+  @@index([paymentStatus])
+  @@map("subscription_addons")
+}
