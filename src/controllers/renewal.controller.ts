@@ -260,6 +260,8 @@ export const completeRenewal = async (
       return;
     }
 
+    const previousStatus = renewal.subscription.status;
+
     // Update renewal
     const updatedRenewal = await prisma.subscriptionRenewal.update({
       where: { id: renewalId },
@@ -271,7 +273,8 @@ export const completeRenewal = async (
       },
     });
 
-    // Update subscription
+    // Update subscription - always activate if payment is received
+    // This handles reactivation from SUSPENDED or GRACE_PERIOD
     await prisma.clientSubscription.update({
       where: { id: renewal.subscriptionId },
       data: {
@@ -279,10 +282,12 @@ export const completeRenewal = async (
         status: 'ACTIVE',
         renewalRemindedAt: null,
         nextRenewalDate: renewal.subscription.autoRenew ? renewal.newEndDate : null,
+        paymentCompletedAt: new Date(),
       },
     });
 
-    // Record the change
+    // Record the change with appropriate reason based on previous status
+    const isReactivation = ['SUSPENDED', 'GRACE_PERIOD'].includes(previousStatus);
     await prisma.subscriptionChange.create({
       data: {
         subscriptionId: renewal.subscriptionId,
@@ -294,7 +299,9 @@ export const completeRenewal = async (
         paymentId,
         invoiceId,
         paymentStatus: 'COMPLETED',
-        reason: 'Renewal payment completed',
+        reason: isReactivation 
+          ? `Renewal payment completed - subscription reactivated from ${previousStatus}`
+          : 'Renewal payment completed',
       },
     });
 
@@ -307,7 +314,14 @@ export const completeRenewal = async (
       totalAmount: Number(renewal.totalAmount),
     });
 
-    sendSuccess(res, updatedRenewal, 'Renewal completed successfully');
+    sendSuccess(res, {
+      renewal: updatedRenewal,
+      previousStatus,
+      reactivated: isReactivation,
+    }, isReactivation 
+      ? `Renewal completed - subscription reactivated from ${previousStatus}`
+      : 'Renewal completed successfully'
+    );
   } catch (error) {
     console.error('Error completing renewal:', error);
     sendError(res, 'Failed to complete renewal', 500);

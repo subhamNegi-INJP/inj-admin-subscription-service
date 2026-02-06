@@ -16,6 +16,7 @@ import subscriptionRoutes from './routes/subscription.routes';
 import renewalRoutes from './routes/renewal.routes';
 import changeRoutes from './routes/change.routes';
 import addonRoutes from './routes/addon.routes';
+import jobsRoutes from './routes/jobs.routes';
 
 // Initialize Express app
 const app: Express = express();
@@ -92,6 +93,9 @@ app.use('/api/renewals', renewalRoutes);
 
 // Change history (also accessible via subscription routes)
 app.use('/api/changes', changeRoutes);
+
+// Background jobs
+app.use('/api/jobs', jobsRoutes);
 
 // =============================================================================
 // ERROR HANDLING

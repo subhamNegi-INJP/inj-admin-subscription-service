@@ -82,7 +82,18 @@ export interface SubscriptionExpiredEvent {
   subscriptionId: string;
   clientId: string;
   productId: string;
-  expiredAt: string;
+  expirationDate: string;
+  gracePeriodDays: number;
+  gracePeriodEndsAt: string;
+}
+
+export interface SubscriptionSuspendedEvent {
+  eventType: 'subscription.suspended';
+  subscriptionId: string;
+  clientId: string;
+  productId: string;
+  suspendedAt: string;
+  reason: string;
 }
 
 export interface SeatsAddedEvent {
@@ -110,6 +121,7 @@ export type SubscriptionEventType =
   | SubscriptionDowngradedEvent
   | SubscriptionExpiringEvent
   | SubscriptionExpiredEvent
+  | SubscriptionSuspendedEvent
   | SeatsAddedEvent
   | SeatsRemovedEvent;
 
@@ -276,6 +288,10 @@ export async function publishSeatsAdded(data: Omit<SeatsAddedEvent, 'eventType'>
 
 export async function publishSeatsRemoved(data: Omit<SeatsRemovedEvent, 'eventType'>): Promise<boolean> {
   return eventPublisher.publish({ eventType: 'subscription.seats_removed', ...data });
+}
+
+export async function publishSubscriptionSuspended(data: Omit<SubscriptionSuspendedEvent, 'eventType'>): Promise<boolean> {
+  return eventPublisher.publish({ eventType: 'subscription.suspended', ...data });
 }
 
 export default eventPublisher;

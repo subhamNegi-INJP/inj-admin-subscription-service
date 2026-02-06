@@ -318,7 +318,7 @@ export const activateSubscription = async (
 ): Promise<void> => {
   try {
     const { id } = req.params;
-    const { paymentId, licensePoolId } = req.body;
+    const { paymentId, licensePoolId, durationMonths } = req.body;
 
     const subscription = await prisma.clientSubscription.findUnique({
       where: { id },
@@ -334,29 +334,50 @@ export const activateSubscription = async (
       return;
     }
 
+    // Allow activation from PENDING, SUSPENDED, or GRACE_PERIOD
+    if (!['PENDING', 'SUSPENDED', 'GRACE_PERIOD'].includes(subscription.status)) {
+      sendError(res, `Cannot activate subscription with status: ${subscription.status}`, 400);
+      return;
+    }
+
     const now = new Date();
+    const previousStatus = subscription.status;
+    
+    // Calculate new expiration date if reactivating from suspended/grace period
+    let newExpirationDate = subscription.expirationDate;
+    if (['SUSPENDED', 'GRACE_PERIOD'].includes(previousStatus) && durationMonths) {
+      newExpirationDate = new Date();
+      newExpirationDate.setMonth(newExpirationDate.getMonth() + durationMonths);
+    }
+
     const updatedSubscription = await prisma.clientSubscription.update({
       where: { id },
       data: {
         status: 'ACTIVE',
         paymentStatus: 'COMPLETED',
         paymentId,
-        activationDate: now,
+        activationDate: subscription.activationDate || now,
+        expirationDate: newExpirationDate,
         licensePoolId,
+        renewalRemindedAt: null,
+        nextRenewalDate: subscription.autoRenew ? newExpirationDate : null,
       },
     });
 
     // Record the change
+    const isReactivation = ['SUSPENDED', 'GRACE_PERIOD'].includes(previousStatus);
     await prisma.subscriptionChange.create({
       data: {
         subscriptionId: id,
-        changeType: 'ACTIVATION',
+        changeType: isReactivation ? 'RENEWED' : 'ACTIVATION',
         newSeats: subscription.seats,
         newAmount: subscription.totalAmount,
         effectiveDate: now,
         paymentId,
         paymentStatus: 'COMPLETED',
-        reason: 'Payment completed',
+        reason: isReactivation 
+          ? `Subscription reactivated from ${previousStatus} after payment received`
+          : 'Payment completed',
       },
     });
 
@@ -368,7 +389,11 @@ export const activateSubscription = async (
       activatedAt: now.toISOString(),
     });
 
-    sendSuccess(res, serializeSubscription(updatedSubscription), 'Subscription activated successfully');
+    sendSuccess(res, serializeSubscription(updatedSubscription), 
+      isReactivation 
+        ? `Subscription reactivated from ${previousStatus}` 
+        : 'Subscription activated successfully'
+    );
   } catch (error) {
     console.error('Error activating subscription:', error);
     sendError(res, 'Failed to activate subscription', 500);
